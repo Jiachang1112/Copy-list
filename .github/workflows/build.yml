@@ -108,6 +108,7 @@ jobs:
         with:
           name: ipa
           path: out/*.ipa
+          archive: false   # 不要再包一層 zip，Artifacts 裡直接是 .ipa
 
       - name: Publish release
         uses: softprops/action-gh-release@v3
