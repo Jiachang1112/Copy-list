@@ -55,7 +55,7 @@ jobs:
           fi
           echo "專案：$PROJ"
 
-          SCHEME=$(xcodebuild -list -json -project "$PROJ" | python3 -c "import sys,json; print(json.load(sys.stdin)['project']['schemes'][0])")
+          SCHEME=$(xcodebuild -list -json -project "$PROJ" | python3 -c "import sys,json; s=json.load(sys.stdin)['project']['schemes']; n='${PROJ%.xcodeproj}'; print(n if n in s else s[0])")
           echo "Scheme：$SCHEME"
 
           # 4) 編譯（不簽名）；失敗時把 error 行單獨列出來，方便直接看原因
@@ -81,6 +81,24 @@ jobs:
           # 5) 打包成 ipa
           APP=$(ls -d "$GITHUB_WORKSPACE"/_build/Build/Products/Release-iphoneos/*.app | head -n 1)
           NAME=$(basename "$APP" .app)
+
+          # 5.1) 把 entitlements（App Group）寫進未簽名的執行檔，之後簽名工具才帶得到
+          if [ -f "Config/$NAME.entitlements" ]; then
+            brew install ldid || true
+            if command -v ldid >/dev/null 2>&1; then
+              ldid -S"Config/$NAME.entitlements" "$APP/$NAME" || echo "::warning::ldid 寫入主程式 entitlements 失敗"
+              for EX in "$APP"/PlugIns/*.appex; do
+                [ -d "$EX" ] || continue
+                EXN=$(basename "$EX" .appex)
+                if [ -f "Config/$EXN.entitlements" ]; then
+                  ldid -S"Config/$EXN.entitlements" "$EX/$EXN" || echo "::warning::ldid 寫入 $EXN entitlements 失敗"
+                fi
+              done
+            else
+              echo "::warning::找不到 ldid，略過 entitlements 寫入"
+            fi
+          fi
+
           mkdir -p "$GITHUB_WORKSPACE/out" Payload
           cp -R "$APP" Payload/
           zip -qry "$GITHUB_WORKSPACE/out/$NAME.ipa" Payload
