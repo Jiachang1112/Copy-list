@@ -70,7 +70,8 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             clean build > "$GITHUB_WORKSPACE/build.log" 2>&1; then
-            echo "===== 編譯錯誤 ====="
+            echo "===== 編譯錯誤（含後面的 note 說明）====="
+            grep -E -A8 "error:" "$GITHUB_WORKSPACE/build.log" | head -n 80 || true
             grep -E "error:" "$GITHUB_WORKSPACE/build.log" | sort -u | head -n 30 | while IFS= read -r line; do
               echo "::error::$line"
             done
