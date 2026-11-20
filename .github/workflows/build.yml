@@ -1,0 +1,98 @@
+name: Build IPA from latest zip
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.zip'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find latest zip, unzip, build
+        run: |
+          set -euo pipefail
+
+          # 1) 找 repo 裡「最新上傳」的 zip（依 commit 時間）
+          ZIP=$(git ls-files '*.zip' | while IFS= read -r f; do
+                  echo "$(git log -1 --format=%ct -- "$f") $f"
+                done | sort -rn | head -n 1 | cut -d' ' -f2-) || true
+          if [ -z "${ZIP:-}" ]; then
+            echo "::error::repo 裡找不到 zip 檔"
+            exit 1
+          fi
+          echo "使用的 zip：$ZIP"
+
+          # 2) 解壓縮
+          rm -rf _src && mkdir _src
+          unzip -q "$ZIP" -d _src
+
+          # 3) 找專案：優先 project.yml（XcodeGen），否則找 .xcodeproj
+          YML=$(find _src -name project.yml -not -path '*/__MACOSX/*' | head -n 1) || true
+          if [ -n "${YML:-}" ]; then
+            cd "$(dirname "$YML")"
+            brew install xcodegen
+            xcodegen generate
+            PROJ=$(ls -d *.xcodeproj | head -n 1)
+          else
+            XP=$(find _src -name '*.xcodeproj' -not -path '*/__MACOSX/*' -not -path '*/Pods/*' | head -n 1) || true
+            if [ -z "${XP:-}" ]; then
+              echo "::error::zip 裡找不到 project.yml 或 .xcodeproj"
+              exit 1
+            fi
+            cd "$(dirname "$XP")"
+            PROJ=$(basename "$XP")
+          fi
+          echo "專案：$PROJ"
+
+          SCHEME=$(xcodebuild -list -json -project "$PROJ" | python3 -c "import sys,json; print(json.load(sys.stdin)['project']['schemes'][0])")
+          echo "Scheme：$SCHEME"
+
+          # 4) 編譯（不簽名）；失敗時把 error 行單獨列出來，方便直接看原因
+          if ! xcodebuild \
+            -project "$PROJ" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$GITHUB_WORKSPACE/_build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean build > "$GITHUB_WORKSPACE/build.log" 2>&1; then
+            echo "===== 編譯錯誤 ====="
+            grep -E "error:" "$GITHUB_WORKSPACE/build.log" | sort -u | head -n 30 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit 1
+          fi
+
+          # 5) 打包成 ipa
+          APP=$(ls -d "$GITHUB_WORKSPACE"/_build/Build/Products/Release-iphoneos/*.app | head -n 1)
+          NAME=$(basename "$APP" .app)
+          mkdir -p "$GITHUB_WORKSPACE/out" Payload
+          cp -R "$APP" Payload/
+          zip -qry "$GITHUB_WORKSPACE/out/$NAME.ipa" Payload
+          ls -la "$GITHUB_WORKSPACE/out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipa
+          path: out/*.ipa
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: IPA build ${{ github.run_number }}
+          files: out/*.ipa
